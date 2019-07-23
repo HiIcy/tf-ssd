@@ -1,0 +1,4 @@
+./.idea/*
+**/__pycache/*
+lib/ssd_gen_tfrecord.py
+lib/dataset_utils.py
