@@ -32,13 +32,14 @@ def hard_negtives(labels, logits: tf.Tensor, pos, neg_radio):
     return neg_mask
 
 
-def my_smooth_l1_loss(bbox_pred,bbox_target,n_batch,alpha=1):
+def my_smooth_l1_loss(bbox_pred,bbox_target,n_pos,alpha=1):
+    # 对应相加减
     box_diff = bbox_pred - bbox_target
     abs_box_diff = tf.abs(box_diff)
-    smoothl1_mask = tf.to_float(tf.less(abs_box_diff,1))
+    smoothl1_mask = tf.cast(tf.less(abs_box_diff,1),tf.float32)
     in_loss_box = tf.pow(box_diff,2)*0.5*smoothl1_mask + (abs_box_diff - 0.5)*(1-smoothl1_mask)
     outloss_box = alpha*in_loss_box
-    loss = tf.reduce_mean(tf.reduce_sum(outloss_box,axis=[1]),name="locs") # FIXME:tf.div?
+    loss = tf.reduce_mean(tf.reduce_sum(outloss_box,axis=1),axis=0,name="locs") # FIXME:tf.div?
     return loss
 
 
@@ -54,17 +55,17 @@ def ssd_loss(loc_pre: tf.Tensor, cls_pre, loc_gt, cls_gt, alpha=1,neg_radio=3.):
     """
     # print(loc_pre.shape,cls_pre.shape)
     # print(loc_gt.shape,cls_gt.shape)
-    n_batch = loc_pre.get_shape().as_list()[0]
     # 因为xij存在，所以位置误差仅针对正样本进行计算
     glabel = tf.argmax(cls_gt,axis=-1)  # (batch,anchor)
     pos_mask = glabel > 0  # 挑选出正样本 (batch,anchor)
-    pos_idx = tf.cast(pos_mask,tf.float32)
-    loc_pre_pos = tf.boolean_mask(loc_pre,pos_mask) # REW:果然可以广播;广播可以忽略最后一个维度
-    loc_gt_pos = tf.boolean_mask(loc_gt,pos_mask)
+    pos_idx = tf.cast(pos_mask,tf.float32)  #
+    n_pos = tf.reduce_sum(pos_idx)
+    loc_pre_pos = tf.boolean_mask(loc_pre,pos_mask)  # REW:果然可以广播;广播可以忽略最后一个维度
+    loc_gt_pos = tf.boolean_mask(loc_gt,pos_mask)  # 会降维 给flatten 返回shape(None,4)
     with tf.name_scope("localization"):
-        loc_loss = my_smooth_l1_loss(loc_pre_pos,loc_gt_pos,n_batch,alpha)
+        loc_loss = my_smooth_l1_loss(loc_pre_pos,loc_gt_pos,n_pos,alpha)
         tf.losses.add_loss(loc_loss)
-    logits = tf.stop_gradient(cls_pre)  # 只是作负样本选择，所以不计算梯度
+    logits = tf.stop_gradient(cls_pre)  # REW:只是作负样本选择，所以不计算梯度
     labels = tf.stop_gradient(cls_gt)
     neg_mask = hard_negtives(labels,logits,pos_idx,neg_radio)
     # FIXME:分开来得到pos，neg
@@ -78,9 +79,8 @@ def ssd_loss(loc_pre: tf.Tensor, cls_pre, loc_gt, cls_gt, alpha=1,neg_radio=3.):
     with tf.name_scope("cross_entropy"):
         # 交叉熵都会减少一个维度
         cls_loss = tf.nn.softmax_cross_entropy_with_logits_v2(target,conf_p)
-        N = tf.reduce_sum(pos_idx)  # 最后除以正样本
-        tf.assert_greater(N,tf.cast(0.,tf.float32))
-        cls_loss = tf.div(tf.reduce_sum(cls_loss),N,name="conf")
+        tf.assert_greater(n_pos,tf.cast(0.,tf.float32))
+        cls_loss = tf.div(tf.reduce_sum(cls_loss),n_pos,name="conf")
         tf.losses.add_loss(cls_loss)
     return cls_loss,loc_loss
 

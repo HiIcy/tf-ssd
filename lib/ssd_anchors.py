@@ -8,7 +8,25 @@ import math
 import tensorflow as tf
 from config import SSD_config
 import numpy as np
-from .utils import tf_box_iou, tf_xywh2xyxy, tf_ssd_bboxes_encode,tf_xyxy2xywh
+from .utils import tf_box_iou, tf_xywh2xyxy, tf_xyxy2xywh
+from .utils import box_iou, xywh2xyxy
+
+
+class SSD_config:
+    n_anchors = [4, 6, 6, 6, 4, 4]
+    feature_layer = ['conv4_3', 'conv7', 'conv8', 'conv9', 'conv10', 'conv11']
+    im_shape = 300
+    grids = [(38, 38), (19, 19), (10, 10), (5, 5), (3, 3), (1, 1)]
+    anchor_sizes = [21, 45, 99, 153, 207, 261, 315]
+    ratios = [[2, 5],
+              [2, .5, 3, 1. / 3],
+              [2, .5, 3, 1. / 3],
+              [2, .5, 3, 1. / 3],
+              [2, .5],
+              [2, .5]]
+    steps = [8, 16, 30, 60, 100, 300]
+    variance = [0.1, 0.1, 0.2, 0.2]
+    n_class = 21
 
 
 def ssd_size_bounds_to_values(n_fea_layer, size_bound: tuple, img_shape=(300, 300)):
@@ -34,12 +52,13 @@ class MultiBoxGenerger(object):
         self.variance = sc.variance
         default_boxes = []  # [[x,y,w,h]
         self.imshape = sc.im_shape
+        # 每个单元的先验框的中心点分布在各个单元的中心
         self.sizes = sc.anchor_sizes if sizes == None else sizes
         for i in range(len(sc.grids)):
             # TODO:用meshgrid
             for v, u in itertools.product(range(sc.grids[i][0]), repeat=2):
                 # x,y= np.meshgrid(range(sc.grids[i]),range(sc.grids[i]))
-                cx = (u + 0.5) * sc.steps[i] / self.imshape
+                cx = (u + 0.5) * sc.steps[i] / self.imshape  # 中心点都是放缩的
                 cy = (v + 0.5) * sc.steps[i] / self.imshape
                 cs = sc.anchor_sizes[i]
                 default_boxes.append((cx, cy, cs / self.imshape, cs / self.imshape))
@@ -49,37 +68,40 @@ class MultiBoxGenerger(object):
                     default_boxes.append((cx, cy, sc.anchor_sizes[i] * math.sqrt(v) / self.imshape,
                                           sc.anchor_sizes[i] / math.sqrt(v) / self.imshape))
         default_boxes = np.clip(default_boxes, 0, 1)  # 归一化
-        self.default_boxes = tf.convert_to_tensor(default_boxes,
-                                                  dtype="float32")
+        self.default_boxes = np.array((default_boxes))
 
     def encode(self, bboxes, labels, threshold=0.5):
-        # TODO:用纯tensorflow 实现
         """
-        type:
         #REW:给每个anchor分配一个bbox 加label
         """
         if len(bboxes) == 0:
-            return (tf.zeros(self.default_boxes.shape, dtype=np.float32),
-                    tf.zeros(self.default_boxes.shape[:1], dtype=np.float32))
-        ious = tf_box_iou(tf_xywh2xyxy(self.default_boxes), bboxes)  # (m,n)
-        pidx = tf.argmax(ious, axis=1)  # 得到bboxes的索引(m)
-        iou = tf.reduce_max(ious, axis=1)
-
-        bboxes[pidx, 0] = (bboxes[pidx, 0] + bboxes[pidx, 2]) * 0.5  # 取出m个n范围里的值
-        bboxes[pidx, 1] = (bboxes[pidx, 1] + bboxes[pidx, 3]) * 0.5
-        bboxes[pidx, 2] = bboxes[pidx, 2] - bboxes[pidx, 0]
-        bboxes[pidx, 3] = bboxes[pidx, 3] - bboxes[pidx, 1]
+            return (np.zeros(self.default_boxes.shape, dtype=np.float32),
+                    np.zeros((self.default_boxes.shape[0],1), dtype=np.uint8))
+        bboxes = np.array(bboxes)
+        labels = np.array(labels)
+        # print('origin', bboxes,'\n====')
+        ious = box_iou(xywh2xyxy(self.default_boxes), bboxes)  # (m,n)
+        pidx = np.argmax(ious, axis=1)  # 得到bboxes的索引(m)
+        # print(f'pidx:{pidx}')
+        iou = np.max(ious, axis=1)
+        # bboxes[pidx, 0] = (bboxes[pidx, 0] + bboxes[pidx, 2]) * 0.5  # 取出m个n范围里的值
         # 边界框的预测值 的转换值，我们称上面这个过程为边界框的编码
         loc_gt = np.zeros((len(self.default_boxes), 4), dtype=np.float32)
-        loc_gt[:, 0] = (bboxes[pidx, 0] - self.default_boxes[:, 0]) / (self.default_boxes[:, 2] * self.variance[0])
-        loc_gt[:, 1] = (bboxes[pidx, 1] - self.default_boxes[:, 1]) / (self.default_boxes[:, 3] * self.variance[1])
-        loc_gt[:, 2] = np.log(bboxes[pidx, 2] / self.default_boxes[:, 2]) / self.variance[2]
-        loc_gt[:, 3] = np.log(bboxes[pidx, 3] / self.default_boxes[:, 3]) / self.variance[3]
+        loc_gt[:, 0] = ((bboxes[pidx, 0] + bboxes[pidx, 2]) * 0.5 - self.default_boxes[:, 0]) \
+                       / (self.default_boxes[:, 2] * self.variance[0]) + 1e-8
+        loc_gt[:, 1] = ((bboxes[pidx, 0] + bboxes[pidx, 2]) * 0.5 - self.default_boxes[:, 1]) \
+                       / (self.default_boxes[:, 3] * self.variance[1]) +1e-8
+        loc_gt[:, 2] = np.log(((bboxes[pidx, 2] - bboxes[pidx, 0]) / (self.default_boxes[:, 2]+1e-8))+1e-10) \
+                       / self.variance[2]
+        loc_gt[:, 3] = np.log(((bboxes[pidx, 3] - bboxes[pidx, 1]) / (self.default_boxes[:, 3]+1e-8))+1e-10) \
+                       / self.variance[3]
         labeler = labels[pidx]
         # 设置为0，通过这一步我们拥有了这个标签后就能知道哪些anchor是正样本
         conf = 1 + labeler
         conf[iou < threshold] = 0
-        return loc_gt, conf.astype(np.int32)
+        print(conf.shape)
+        # exit(0)
+        return loc_gt, conf.astype(np.uint8)
 
     def tf_encode(self, bboxes, labels, threshold=0.5):
         # 后面有用batch函数，所以这里单个就行
@@ -87,7 +109,7 @@ class MultiBoxGenerger(object):
             return (tf.zeros(self.default_boxes.shape, dtype=tf.float32),
                     tf.zeros(self.default_boxes.shape[:1], dtype=tf.uint8))
         # print(bboxes.get_shape().as_list())
-        b,_,_ = bboxes.get_shape().as_list()
+        b, _, _ = bboxes.get_shape().as_list()
         loc_record = []
         conf_record = []
         for i in range(b):
@@ -95,25 +117,24 @@ class MultiBoxGenerger(object):
             pidx = tf.argmax(ious, axis=1)  # 得到bboxes的索引(m)
             iou = tf.reduce_max(ious, axis=1)
 
-            bboxs = tf_xyxy2xywh(tf.gather(bboxes[i],pidx))
+            bboxs = tf_xyxy2xywh(tf.gather(bboxes[i], pidx))
             # stack 会增加维度，所以不必用:切片
             loc_gt = tf.stack([
-                    tf.div(bboxs[:,0] - self.default_boxes[:,0],(self.default_boxes[:,2]*self.variance[0])),
-                    tf.div(bboxs[:,1] - self.default_boxes[:,1],(self.default_boxes[:,3]*self.variance[1])),
-                    tf.log(bboxs[:,2]/self.default_boxes[:,2]) / self.variance[2],
-                    tf.log(bboxs[:,3]/self.default_boxes[:,3]) / self.variance[3]
-            ],axis=-1)
-            labeler = tf.gather(labels[i],pidx)
+                tf.div(bboxs[:, 0] - self.default_boxes[:, 0], (self.default_boxes[:, 2] * self.variance[0])),
+                tf.div(bboxs[:, 1] - self.default_boxes[:, 1], (self.default_boxes[:, 3] * self.variance[1])),
+                tf.log(bboxs[:, 2] / self.default_boxes[:, 2]) / self.variance[2],
+                tf.log(bboxs[:, 3] / self.default_boxes[:, 3]) / self.variance[3]
+            ], axis=-1)
+            labeler = tf.gather(labels[i], pidx)
             conf = 1 + labeler
             tzero = tf.zeros_like(conf)
             conditon = iou > threshold  # (m,)
-            conf = tf.where(conditon,tzero,conf)
+            conf = tf.where(conditon, tzero, conf)
             loc_record.append(loc_gt)
             conf_record.append(conf)
         bloc_gt = tf.stack(loc_record)
         bconf = tf.stack(conf_record)
-        return bloc_gt,bconf
-
+        return bloc_gt, bconf
 
     def decode(self, p_loc):
         loc_gt = np.zeros((len(self.default_boxes), 4), dtype=np.float32)
@@ -127,13 +148,14 @@ class MultiBoxGenerger(object):
 
         return loc_gt
 
-    def tf_decode(self,p_loc):  # 针对单张图片 TODO:batch支持
+    def tf_decode(self, p_loc):  # 针对单张图片 TODO:batch支持
         loc_pr = tf.stack([
             self.variance[0] * p_loc[:, 0] * self.default_boxes[:, 2] + self.default_boxes[:, 0],
             self.variance[1] * p_loc[:, 1] * self.default_boxes[:, 3] + self.default_boxes[:, 1],
             self.default_boxes[:, 2] * np.exp(self.variance[2] * p_loc[:, 2]),
             self.default_boxes[:, 3] * np.exp(self.variance[3] * p_loc[:, 3])
         ])
+        return loc_pr
 
 
 class TfMultiBoxGenerger(object):
@@ -201,7 +223,7 @@ class TfMultiBoxGenerger(object):
             layers_anchors.append(anchor_bboxes)
         return layers_anchors
 
-    def tf_encode(self, bboxes, labels):
-        return tf_ssd_bboxes_encode(labels, bboxes,
-                                    self.anchors,
-                                    self.n_class,)
+
+if __name__ == "__main__":
+    mb = MultiBoxGenerger(sc=SSD_config)
+    print(mb.default_boxes[:20])
