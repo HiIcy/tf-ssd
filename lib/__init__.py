@@ -1,17 +1,9 @@
-# import tensorflow as tf
-# import numpy as np
-# pt = tf.placeholder('uint8',shape=[None,1])
-# pv = tf.constant([[1,2,5,6],[9,8,5,2]])
-# z = [[2],[5],[5],[7]]
-# j = pt.shape
-# batch = tf.shape(pt)[0]
-# print(batch)
-# som = tf.reshape(pv,[batch,2])
-# with tf.Session() as s:
-#     s.run(tf.global_variables_initializer())
-# #     s.run(k,{pt:pv})
-#     yv = s.run(som,{pt:z})
-#     print(yv)
-# t1 = [[[1,2], [3,4]],
-#       [[5,6], [7,8]]]
-# print(np.shape(t1))
+# issue
+"""
+今天使用tensorflow，显存总是超，11G啊，说没就没了，可是我使用的变量全算下来，也就才消耗50M的显存。。。
+google后，终于发现原因tf.gather(…)函数。
+这个函数会初始化数组，保存取得的下标。下标用tf.IndexedSlices类保存，会在gather函数内隐式转换为大Tensor。而如果参数是Tensor，其中至少一维是’?’的话，那么恭喜你，中标了！
+解决办法：把参数换成Variable，至少不要存在某个维的大小是’?’
+"""
+# 出现nan
+# 看哪里计算出现了0或inf
