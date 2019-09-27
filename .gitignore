@@ -4,3 +4,4 @@ lib/__pycache__/*
 lib/ssd_gen_tfrecord.py
 lib/dataset_utils.py
 ssd_train2.py
+.idea

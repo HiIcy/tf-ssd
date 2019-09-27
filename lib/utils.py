@@ -11,11 +11,9 @@ import cv2
 # np版
 ########################
 def xywh2xyxy(dboxes: np.ndarray):
-    dboxes[:, 0] -= dboxes[:, 2] / 2
-    dboxes[:, 1] -= dboxes[:, 3] / 2
-    dboxes[:, 2] += dboxes[:, 2] / 2
-    dboxes[:, 3] += dboxes[:, 3] / 2
-    return dboxes
+    tl = dboxes[:,:2] - dboxes[:,2:]//2
+    rb = dboxes[:,:2] + dboxes[:,2:]//2
+    return np.concatenate([tl,rb],axis=1)
 
 
 def tf_xyxy2xywh(dboxes:tf.Tensor):
